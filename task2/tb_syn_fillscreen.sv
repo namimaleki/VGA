@@ -36,9 +36,10 @@ module tb_syn_fillscreen();
     initial clk = 0;
     always #10 clk = ~clk;
 
-    // test flow
+    
+    //testbench
     initial begin
-        // init
+        // initialize inputs
         rst_n  = 1;
         start  = 0;
         colour = 3'b0;
@@ -52,14 +53,30 @@ module tb_syn_fillscreen();
         assert(state == 2'd0)      else $error("TEST1 FAIL: state should be CLEAR, got %0d", state);
         assert(next_state == 2'd0) else $error("TEST1 FAIL: next_state should be CLEAR, got %0d", next_state);
         rst_n = 1;
+    
+    
         @(posedge clk); #1;
-
         // TEST 2: clear -> wait
         assert(state == 2'd0)      else $error("TEST2 FAIL: should be in CLEAR after reset, got %0d", state);
         assert(vga_plot == 1'b1)   else $error("TEST2 FAIL: vga_plot should be 1 during CLEAR, got %0d", vga_plot);
         assert(vga_colour == 3'b0) else $error("TEST2 FAIL: colour should be black during CLEAR, got %0d", vga_colour);
         assert(next_state == 2'd0) else $error("TEST2 FAIL: next_state should be CLEAR, got %0d", next_state);
-        repeat(19200) @(posedge clk); #1;
+        
+        cycle_count = 0;
+        while(state !== 2'd1) begin 
+            @(posedge clk); #1;
+            cycle_count = cycle_count + 1;
+            if(cycle_count > 19210) begin
+                $error("TEST2 FAIL: exceeded 19210 cycles, at cycle count: %0d", cycle_count);
+                break;
+            end
+        end
+
+        assert(cycle_count <= 19200) else $error("TEST2 FAIL: took %0d cycles, max is 19200", cycle_count);
+        $display("TEST 2 [CLEAR AFTER RST_N]: completed in %0d cycles", cycle_count);
+
+
+        //repeat(19200) @(posedge clk); #1;
         assert(state == 2'd1)      else $error("TEST2 FAIL: should be in WAIT after clear, got %0d", state);
         assert(next_state == 2'd1) else $error("TEST2 FAIL: next_state should be WAIT, got %0d", next_state);
         assert(vga_plot == 1'b0)   else $error("TEST2 FAIL: vga_plot should be 0 in WAIT, got %0d", vga_plot);
@@ -97,16 +114,8 @@ module tb_syn_fillscreen();
         assert(vga_y == 7'd119)    else $error("TEST6 FAIL: y should be 119, got %0d", vga_y);
         assert(state == 2'd2)      else $error("TEST6 FAIL: should still be in PLOT, got %0d", state);
         assert(next_state == 2'd3) else $error("TEST6 FAIL: next_state should be DONE, got %0d", next_state);
-        @(posedge clk); #1;
-        assert(state == 2'd3)      else $error("TEST6 FAIL: should be in DONE, got %0d", state);
-        assert(next_state == 2'd3) else $error("TEST6 FAIL: next_state should be DONE (start=1), got %0d", next_state);
-        assert(done == 1'b1)       else $error("TEST6 FAIL: done should be 1, got %0d", done);
-        assert(vga_plot == 1'b0)   else $error("TEST6 FAIL: vga_plot should be 0, got %0d", vga_plot);
 
-        // TEST 7: done -> wait 
-        assert(state == 2'd3)      else $error("TEST7 FAIL: should still be in DONE, got %0d", state);
-        assert(next_state == 2'd3) else $error("TEST7 FAIL: next_state should be DONE (start=1), got %0d", next_state);
-        assert(done == 1'b1)       else $error("TEST7 FAIL: done should still be 1, got %0d", done);
+        // TEST 7: done -> wait
         start = 0;
         @(posedge clk); #1;
         assert(next_state == 2'd1) else $error("TEST7 FAIL: next_state should be WAIT after ~start, got %0d", next_state);
@@ -134,7 +143,32 @@ module tb_syn_fillscreen();
         end
         
         assert(cycle_count <= 19210) else $error("TEST8 FAIL: took %0d cycles, max is 19210 cycles.", cycle_count);
-        $display("TESTS PASS: completed in %0d cycles", cycle_count);
+        $display("TEST 8   [PLOT AFTER WAIT]: completed in %0d cycles", cycle_count);
+
+        assert(state == 2'd3)      else $error("TEST8 FAIL: should be in DONE, got %0d", state);
+        assert(done == 1'b1) else $error("TEST8 FAIL: done should be 1, got %0d", done);
+
+        // TEST 9: Done -> Plot
+
+        cycle_count = 0;
+        start = 1;
+        @(posedge clk); #1;
+        assert(state == 2'd2)      else $error("TEST9 FAIL: should be in PLOT after start, got %0d", state);
+        assert(next_state == 2'd2) else $error("TEST9 FAIL: next_state should be PLOT, got %0d", next_state);
+        // count cycles until done
+        while(done !== 1'b1) begin
+            @(posedge clk); #1;
+            cycle_count = cycle_count + 1;
+            if(cycle_count > 19210) begin
+                $error("TEST9 FAIL: exceeded 19210 cycle, at cycle count: %0d", cycle_count);
+                break;
+            end
+        end
+        
+        assert(cycle_count <= 19210) else $error("TEST9 FAIL: took %0d cycles, max is 19210 cycles.", cycle_count);
+        $display("TEST 9   [PLOT AFTER DONE]: completed in %0d cycles", cycle_count);
+        assert(done == 1'b1) else $error("TEST9 FAIL: done should be 1, got %0d", done);
+
         $finish(0);
     end
 

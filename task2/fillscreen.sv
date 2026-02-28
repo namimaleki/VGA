@@ -9,11 +9,11 @@ module fillscreen(input logic clk, input logic rst_n, input logic [2:0] colour,
     
     // internal signals
     logic pixel_done;
-    logic [7:0] x_count;
-    logic [6:0] y_count;
+    logic [7:0] x_count; //160 pixels in x direction, needs 8 bits
+    logic [6:0] y_count; //120 pixels in y direction, needs 7 bits
     
     //helper function counter
-    task run_counter;
+    task counter;
         if (pixel_done) begin
             x_count <= 8'd0;
             y_count <= 7'd0;
@@ -31,19 +31,27 @@ module fillscreen(input logic clk, input logic rst_n, input logic [2:0] colour,
     always_comb begin
         //default 
         next_state = CLEAR;
+
         case(state) 
+
             CLEAR: begin
                 next_state = (pixel_done) ? WAIT : CLEAR;
             end
+
             WAIT: begin
                 next_state =  (start) ? PLOT : WAIT;
             end
+
             PLOT: begin 
-                next_state =  (pixel_done) ? DONE : PLOT;
+                next_state =  (~start && ~pixel_done) ? WAIT : 
+                                         (pixel_done) ? DONE : PLOT;
             end
+
             DONE: begin
-                next_state =  (~start) ? WAIT : DONE;
+                next_state =  (~start) ? WAIT :
+                               (start) ? PLOT : DONE; 
             end
+
         endcase
     end
 
@@ -56,7 +64,7 @@ module fillscreen(input logic clk, input logic rst_n, input logic [2:0] colour,
         end else begin
             state <= next_state;
             if (state == CLEAR || state == PLOT) begin
-                run_counter();
+                counter();
             end else begin
                 x_count <= 8'd0;
                 y_count <= 7'd0;
