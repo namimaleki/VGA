@@ -32,11 +32,9 @@
 ### Given Modules
 - [x] `vga_demo.sv`
 - [x] `vga_adapter` 
+  
 
 ### Remaining Modules
-- [ ] `fillscreen.sv`
-- [ ] `tb_rtl_fillscreen.sv`
-- [ ] `tb_syn_fillscreen.sv`
 - [ ] `task2.sv`
 - [ ] `tb_rtl_task2.sv`
 - [ ] `tb_syn_task2.sv`
@@ -54,3 +52,6 @@
 - [ ] `tb_syn_task4.sv`
 
 ### Completed Modules
+- [X] `fillscreen.sv`
+- [X] `tb_rtl_fillscreen.sv`
+- [X] `tb_syn_fillscreen.sv`
