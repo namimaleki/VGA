@@ -35,9 +35,6 @@
   
 
 ### Remaining Modules
-- [ ] `task2.sv`
-- [ ] `tb_rtl_task2.sv`
-- [ ] `tb_syn_task2.sv`
 - [ ] `circle.sv`
 - [ ] `tb_rtl_circle.sv`
 - [ ] `tb_syn_circle.sv`
@@ -55,3 +52,6 @@
 - [X] `fillscreen.sv`
 - [X] `tb_rtl_fillscreen.sv`
 - [X] `tb_syn_fillscreen.sv`
+- [X] `task2.sv`
+- [X] `tb_rtl_task2.sv`
+- [X] `tb_syn_task2.sv`
