@@ -9,4 +9,34 @@ module task2(input logic CLOCK_50, input logic [3:0] KEY,
 
     // instantiate and connect the VGA adapter and your module
 
+    //instantiate VGA adapter
+    vga_adapter VGA(
+        .resetn(KEY[3]),
+        .clock(CLOCK_50),
+        .colour(VGA_COLOUR),
+        .x(VGA_X), .y(VGA_Y), .plot(VGA_PLOT),
+        .VGA_R(VGA_R),
+        .VGA_G(VGA_G),
+        .VGA_B(VGA_B),
+        .VGA_HS(VGA_HS),
+        .VGA_VS(VGA_VS),
+        .VGA_BLANK(),
+        .VGA_SYNC(),
+        .VGA_CLK(VGA_CLK)
+    );
+
+    //instantiate fillscreen
+    fillscreen FILL(
+        .clk(CLOCK_50),
+        .rst_n(KEY[3]),
+        .colour(SW[2:0]),
+        .start(~KEY[0]),
+        .done(LEDR[0]),
+        .vga_x(VGA_X),
+        .vga_y(VGA_Y),
+        .vga_colour(VGA_COLOUR),
+        .vga_plot(VGA_PLOT)
+    );
+
+
 endmodule: task2
