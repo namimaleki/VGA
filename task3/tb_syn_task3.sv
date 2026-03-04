@@ -1,11 +1,15 @@
 `timescale 1ns/1ps
 module tb_syn_task3();
 
-    // Post-synthesis testbench for task3 top-level
-    // We verify using only the public I/O ports:
-    // - After reset: the design clears the screen (VGA_PLOT=1, VGA_COLOUR=black) then stops plotting (WAIT)
-    // - On start button press (KEY[0] active-low): clears again, then draws circle (green pixels plotted), then DONE (LEDR[0]=1)
-    // - DONE stays high until start is released, then returns to WAIT
+    // syn testbench for task3 top level
+    // we only use top level i o since syn sims do not let us trust internal names
+    // we check the expected board behavior
+    // after reset it should clear the screen to black then stop
+    // when start is pressed it should clear again then draw the green circle then done
+    // done must hold until start is released
+    // any time it plots then x and y must be inside the screen
+
+    // top level signals
     logic CLOCK_50;
     logic [3:0] KEY;
     logic [9:0] SW;
@@ -18,6 +22,7 @@ module tb_syn_task3();
     logic [2:0] VGA_COLOUR;
     logic VGA_PLOT;
 
+    // instantiate the top level dut
     task3 UUT(
         .CLOCK_50(CLOCK_50),
         .KEY(KEY),
@@ -30,102 +35,121 @@ module tb_syn_task3();
         .VGA_COLOUR(VGA_COLOUR),.VGA_PLOT(VGA_PLOT)
     );
 
-    // 50MHz clock
-    initial CLOCK_50=1'b0;
-    always #10 CLOCK_50=~CLOCK_50;
+    // 50mhz clock like the board
+    initial CLOCK_50 = 1'b0;
+    always #10 CLOCK_50 = ~CLOCK_50;
 
-    task automatic tick();
+    // helper to step one cycle and let signals settle
+    task automatic step_cycle();
         @(posedge CLOCK_50);
         #1;
     endtask
 
-    task automatic do_reset();
+    // reset helper
+    // key3 is active low synchronous reset
+    // we also keep start released during reset so we do not accidentally start a run
+    task automatic apply_reset();
         begin
-            KEY=4'hF;
-            SW=10'd0;
-            KEY[0]=1'b1; // start released
-            KEY[3]=1'b0; // assert reset (active-low)
-            tick();
-            KEY[3]=1'b1; // deassert reset
-            tick();
+            KEY = 4'hF;
+            SW = 10'd0;
+
+            // key0 released
+            KEY[0] = 1'b1;
+
+            // assert then deassert reset
+            KEY[3] = 1'b0;
+            step_cycle();
+            KEY[3] = 1'b1;
+            step_cycle();
         end
     endtask
 
-    task automatic press_start();
+    // start button helpers
+    // key0 pressed is 0 and released is 1
+    task automatic press_start_button();
         begin
-            KEY[0]=1'b0;
+            KEY[0] = 1'b0;
+        end
+    endtask
+    
+    task automatic release_start_button();
+        begin
+            KEY[0] = 1'b1;
         end
     endtask
 
-    task automatic release_start();
+    // safety check
+    // if the top level is plotting then it must be inside 160 by 120
+    task automatic check_plot_is_safe();
         begin
-            KEY[0]=1'b1;
+            if(VGA_PLOT) begin
+                assert(VGA_X <= 8'd159) else $error("oob plot x %0d", VGA_X);
+                assert(VGA_Y <= 7'd119) else $error("oob plot y %0d", VGA_Y);
+            end
         end
     endtask
 
-    // Wait for a clear phase to end by detecting VGA_PLOT going low.
-    // While clearing: VGA_PLOT=1 and VGA_COLOUR must be black.
-    task automatic wait_for_clear_end(input int max_cycles);
-        int c;
+    // wait until a clear phase finishes
+    // clear phase is when vga_plot is high every cycle and colour is black
+    // when clear finishes vga_plot goes low and we move to wait or draw
+    task automatic wait_until_clear_finishes(input int max_cycles);
+        int cycles;
         begin
-            c=0;
-            while (VGA_PLOT===1'b1) begin
-                tick();
-                c=c+1;
+            cycles = 0;
+            while(VGA_PLOT === 1'b1) begin
+                step_cycle();
+                check_plot_is_safe();
 
-                assert(VGA_COLOUR==3'b000) else $error("CLEAR: expected black, got %0d", VGA_COLOUR);
+                // during clear it should always be writing black
+                assert(VGA_COLOUR == 3'b000) else $error("clear expected black got %0d", VGA_COLOUR);
 
-                if (c>max_cycles) begin
-                    $error("CLEAR TIMEOUT: VGA_PLOT stayed high > %0d cycles", max_cycles);
+                cycles = cycles + 1;
+                if(cycles > max_cycles) begin
+                    $error("clear timeout vga_plot stayed high longer than %0d cycles", max_cycles);
                     $finish(1);
                 end
             end
         end
     endtask
 
-    // Observe the draw phase for some cycles:
-    // - any plotted pixel must be in bounds
-    // - we should see at least one plotted green pixel
-    task automatic observe_draw(input int cycles_to_watch);
+    // watch draw activity
+    // the circle colour is green 010 so we expect to see at least one green plotted pixel
+    // this is a sanity check that draw actually happened
+    task automatic watch_draw_activity(input int watch_cycles);
         int i;
-        bit saw_green;
+        bit saw_green_pixel;
         begin
-            i=0;
-            saw_green=0;
+            i = 0;
+            saw_green_pixel = 0;
 
-            while (i<cycles_to_watch) begin
-                tick();
+            while(i < watch_cycles) begin
+                step_cycle();
+                check_plot_is_safe();
 
-                if (VGA_PLOT) begin
-                    assert(VGA_X<=8'd159) else $error("DRAW: plotted x out of bounds: %0d", VGA_X);
-                    assert(VGA_Y<=7'd119) else $error("DRAW: plotted y out of bounds: %0d", VGA_Y);
-                    if (VGA_COLOUR==3'b010) saw_green=1;
-                end
+                if(VGA_PLOT && VGA_COLOUR == 3'b010) saw_green_pixel = 1;
 
-                if (LEDR[0]===1'b1) break; // if it finishes early, stop watching
-                i=i+1;
+                // if done happens early we stop watching
+                if(LEDR[0] === 1'b1) break;
+
+                i = i + 1;
             end
 
-            assert(saw_green) else $error("DRAW: did not observe any plotted green pixels");
+            assert(saw_green_pixel) else $error("draw did not observe any plotted green pixels");
         end
     endtask
 
-    task automatic wait_for_done(input int max_cycles);
-        int c;
+    // wait for done using led0
+    // keep checking bounds while waiting
+    task automatic wait_until_done_asserts(input int max_cycles);
+        int cycles;
         begin
-            c=0;
-            while (LEDR[0]!==1'b1) begin
-                tick();
-                c=c+1;
-
-                // Safety: any plotted pixel must be in bounds
-                if (VGA_PLOT) begin
-                    assert(VGA_X<=8'd159) else $error("RUN: plotted x out of bounds: %0d", VGA_X);
-                    assert(VGA_Y<=7'd119) else $error("RUN: plotted y out of bounds: %0d", VGA_Y);
-                end
-
-                if (c>max_cycles) begin
-                    $error("DONE TIMEOUT: LEDR[0] not asserted within %0d cycles", max_cycles);
+            cycles = 0;
+            while(LEDR[0] !== 1'b1) begin
+                step_cycle();
+                check_plot_is_safe();
+                cycles = cycles + 1;
+                if(cycles > max_cycles) begin
+                    $error("done timeout led0 not asserted within %0d cycles", max_cycles);
                     $finish(1);
                 end
             end
@@ -133,62 +157,70 @@ module tb_syn_task3();
     endtask
 
     initial begin
-        // TEST 1: reset triggers automatic clear then WAIT
-        do_reset();
+        // init inputs
+        KEY = 4'hF;
+        SW = 10'd0;
+        release_start_button();
 
-        // Should begin clearing immediately after reset
-        assert(VGA_PLOT==1'b1) else $error("TEST1: expected VGA_PLOT=1 during initial clear");
-        assert(VGA_COLOUR==3'b000) else $error("TEST1: expected black during initial clear");
-        assert(LEDR[0]==1'b0) else $error("TEST1: done LED should be low during initial clear");
+        // test 1 reset behavior
+        // after reset it should immediately start clearing
+        apply_reset();
 
-        // Initial clear should finish in ~19200 cycles (+ tolerance)
-        wait_for_clear_end(19210);
+        assert(VGA_PLOT == 1'b1) else $error("t1 expected vga_plot high during initial clear");
+        assert(VGA_COLOUR == 3'b000) else $error("t1 expected black during initial clear");
+        assert(LEDR[0] == 1'b0) else $error("t1 expected done led low during initial clear");
 
-        // Now should be WAIT (not plotting, not done)
-        tick();
-        assert(VGA_PLOT==1'b0) else $error("TEST1: expected VGA_PLOT=0 after clear");
-        assert(LEDR[0]==1'b0) else $error("TEST1: expected done LED low in WAIT");
+        // clear should take about 19200 cycles so allow some tolerance
+        wait_until_clear_finishes(19210);
 
-        // TEST 2: press start -> clear again -> draw -> done
-        press_start();
-        tick();
+        // after clear we should be idle
+        step_cycle();
+        check_plot_is_safe();
+        assert(VGA_PLOT == 1'b0) else $error("t1 expected vga_plot low in wait after clear");
+        assert(LEDR[0] == 1'b0) else $error("t1 expected done led low in wait");
 
-        // Should go into clear before draw
-        assert(VGA_PLOT==1'b1) else $error("TEST2: expected VGA_PLOT=1 during pre-draw clear");
-        assert(VGA_COLOUR==3'b000) else $error("TEST2: expected black during pre-draw clear");
+        // test 2 press start
+        // we should clear again then draw then done
+        press_start_button();
+        step_cycle();
 
-        wait_for_clear_end(19210);
+        assert(VGA_PLOT == 1'b1) else $error("t2 expected vga_plot high during pre draw clear");
+        assert(VGA_COLOUR == 3'b000) else $error("t2 expected black during pre draw clear");
 
-        // After clear ends, should be drawing; observe some green plotted pixels
-        observe_draw(4000);
+        wait_until_clear_finishes(19210);
 
-        // Wait for done to assert (overall must be < 1,000,000 ticks)
-        wait_for_done(900000);
+        // after second clear we expect draw activity
+        watch_draw_activity(4000);
 
-        // In DONE, it should not be plotting new pixels
-        tick();
-        assert(LEDR[0]==1'b1) else $error("TEST2: expected done LED high");
-        assert(VGA_PLOT==1'b0) else $error("TEST2: expected VGA_PLOT=0 in DONE");
+        // then we wait for done
+        wait_until_done_asserts(900000);
 
-        // TEST 3: release start -> return to WAIT and done LED drops
-        release_start();
-        tick();
-        tick();
-        assert(LEDR[0]==1'b0) else $error("TEST3: expected done LED low after start released");
-        assert(VGA_PLOT==1'b0) else $error("TEST3: expected VGA_PLOT=0 in WAIT");
+        // in done we expect no more plotting
+        step_cycle();
+        check_plot_is_safe();
+        assert(LEDR[0] == 1'b1) else $error("t2 expected done led high in done");
+        assert(VGA_PLOT == 1'b0) else $error("t2 expected vga_plot low in done");
 
-        // TEST 4: run again to ensure restart works
-        press_start();
-        tick();
-        wait_for_clear_end(19210);
-        observe_draw(4000);
-        wait_for_done(900000);
-        release_start();
-        tick();
-        tick();
-        assert(LEDR[0]==1'b0) else $error("TEST4: expected done LED low after second run");
+        // test 3 release start
+        // done should drop and we should be ready again
+        release_start_button();
+        step_cycle();
+        step_cycle();
+        assert(LEDR[0] == 1'b0) else $error("t3 expected done led low after start released");
+        assert(VGA_PLOT == 1'b0) else $error("t3 expected vga_plot low in wait");
 
-        $display("tb_syn_task3: ALL TESTS PASSED");
+        // test 4 run again to confirm restart works
+        press_start_button();
+        step_cycle();
+        wait_until_clear_finishes(19210);
+        watch_draw_activity(4000);
+        wait_until_done_asserts(900000);
+        release_start_button();
+        step_cycle();
+        step_cycle();
+        assert(LEDR[0] == 1'b0) else $error("t4 expected done led low after second run");
+
+        $display("tb_syn_task3 all tests passed");
         $finish(0);
     end
 

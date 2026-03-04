@@ -1,8 +1,13 @@
 `timescale 1ns/1ps
 module tb_rtl_circle();
 
-    // Declare signals
-    logic clk, rst_n, start;
+    // rtl testbench for circle
+    // here we are allowed to peek internal registers because this is tb_rtl
+    // that lets us check the octant mapping exactly and not just guess from outputs
+    // we still keep it realistic by mainly checking the vga outputs and handshake
+
+    // dut signals
+    logic clk,rst_n,start;
     logic [2:0] colour;
     logic [7:0] centre_x;
     logic [6:0] centre_y;
@@ -13,7 +18,7 @@ module tb_rtl_circle();
     logic [2:0] vga_colour;
     logic vga_plot;
 
-    // Instantiate DUT
+    // instantiate dut
     circle UUT(
         .clk(clk),
         .rst_n(rst_n),
@@ -29,25 +34,28 @@ module tb_rtl_circle();
         .vga_plot(vga_plot)
     );
 
-    // Clock: 50 MHz (period 20ns)
+    // 50mhz clock
     initial clk = 1'b0;
     always #10 clk = ~clk;
 
-    // Local copies of circle state encodings
+    // local copies of circle state encodings
+    // these match the enum values in your circle module
     localparam int IDLE_S = 0;
     localparam int INIT_S = 1;
     localparam int PLOT_S = 2;
     localparam int UPDATE_S = 3;
     localparam int DONE_S = 4;
 
-    
-    // Helpers
-    task automatic tick();
+    // helpers
+    // one clean clock step and then a small delay so signals settle
+    task automatic step_cycle();
         @(posedge clk);
         #1;
     endtask
 
-    task automatic do_reset();
+    // reset helper
+    // reset is active low and synchronous so we hold rst_n low for one clock edge
+    task automatic apply_reset();
         begin
             rst_n = 1'b1;
             start = 1'b0;
@@ -56,173 +64,166 @@ module tb_rtl_circle();
             centre_y = 7'd0;
             radius = 8'd0;
 
-            // active-low synchronous reset
             rst_n = 1'b0;
-            tick();
+            step_cycle();
             rst_n = 1'b1;
-            tick();
+            step_cycle();
         end
     endtask
 
-    task automatic wait_done_with_timeout(input int max_cycles);
-        int c;
+    // wait for done but do not hang forever
+    // this keeps the tb from getting stuck if something is broken
+    task automatic wait_for_done_or_fail(input int max_cycles);
+        int cycles;
         begin
-            c = 0;
-            while (done !== 1'b1) begin
-                tick();
-                c++;
-                if (c > max_cycles) begin
-                    $error("TIMEOUT: done did not assert within %0d cycles", max_cycles);
+            cycles = 0;
+            while(done !== 1'b1) begin
+                step_cycle();
+                cycles = cycles + 1;
+                if(cycles > max_cycles) begin
+                    $error("timeout done did not assert within %0d cycles", max_cycles);
                     $finish(1);
                 end
             end
         end
     endtask
 
-    // Compute expected octant coordinate for CURRENT internal regs.
-    // We use RTL hierarchical access (allowed for tb_rtl_*).
-    task automatic expected_octant_xy(
-        input  logic [2:0] oct,
-        output logic signed [9:0] ex,
-        output logic signed [8:0] ey
+    // compute the expected pixel for a given octant based on the dut internal regs
+    // we do this so we can check your octant mapping is exactly right
+    task automatic calc_expected_octant_xy(
+        input logic [2:0] oct,
+        output logic signed [9:0] exp_x,
+        output logic signed [8:0] exp_y
     );
         logic signed [9:0] cx_s;
         logic signed [8:0] cy_s;
         logic signed [8:0] ox;
         logic signed [8:0] oy;
         begin
-            cx_s = {1'b0, UUT.cx_reg};
-            cy_s = {1'b0, UUT.cy_reg};
-            ox   = UUT.offset_x;
-            oy   = UUT.offset_y;
+            cx_s = {1'b0,UUT.cx_reg};
+            cy_s = {1'b0,UUT.cy_reg};
+            ox = UUT.offset_x;
+            oy = UUT.offset_y;
 
-            ex = 10'sd0;
-            ey =  9'sd0;
+            exp_x = 10'sd0;
+            exp_y = 9'sd0;
 
-            case (oct)
-                3'd0: begin ex = cx_s + ox; ey = cy_s + oy; end
-                3'd1: begin ex = cx_s + oy; ey = cy_s + ox; end
-                3'd2: begin ex = cx_s - ox; ey = cy_s + oy; end
-                3'd3: begin ex = cx_s - oy; ey = cy_s + ox; end
-                3'd4: begin ex = cx_s - ox; ey = cy_s - oy; end
-                3'd5: begin ex = cx_s - oy; ey = cy_s - ox; end
-                3'd6: begin ex = cx_s + ox; ey = cy_s - oy; end
-                3'd7: begin ex = cx_s + oy; ey = cy_s - ox; end
-                default: begin ex = 10'sd0; ey = 9'sd0; end
+            case(oct)
+                3'd0: begin exp_x = cx_s + ox; exp_y = cy_s + oy; end
+                3'd1: begin exp_x = cx_s + oy; exp_y = cy_s + ox; end
+                3'd2: begin exp_x = cx_s - ox; exp_y = cy_s + oy; end
+                3'd3: begin exp_x = cx_s - oy; exp_y = cy_s + ox; end
+                3'd4: begin exp_x = cx_s - ox; exp_y = cy_s - oy; end
+                3'd5: begin exp_x = cx_s - oy; exp_y = cy_s - ox; end
+                3'd6: begin exp_x = cx_s + ox; exp_y = cy_s - oy; end
+                3'd7: begin exp_x = cx_s + oy; exp_y = cy_s - ox; end
+                default: begin exp_x = 10'sd0; exp_y = 9'sd0; end
             endcase
         end
     endtask
 
-    task automatic check_plot_cycle();
-        logic signed [9:0] ex;
-        logic signed [8:0] ey;
+    // check one cycle worth of behavior when the dut is in plot
+    // we verify colour is latched colour
+    // we verify vga_plot matches in bounds logic
+    // and if we are in bounds we verify vga_x and vga_y match the expected mapping
+    task automatic check_plot_cycle_mapping();
+        logic signed [9:0] exp_x;
+        logic signed [8:0] exp_y;
         logic exp_in_bounds;
         begin
-            // We will only check mapping while in the plot state
-            if (UUT.state == PLOT_S) begin
-                expected_octant_xy(UUT.octant_idx, ex, ey);
+            if(UUT.state == PLOT_S) begin
+                calc_expected_octant_xy(UUT.octant_idx,exp_x,exp_y);
 
-                exp_in_bounds = (ex >= 0) && (ex <= 10'sd159) && (ey >= 0) && (ey <= 9'sd119);
+                exp_in_bounds = (exp_x >= 0) && (exp_x <= 10'sd159) && (exp_y >= 0) && (exp_y <= 9'sd119);
 
-                // Colour should always be the latched colour while plotting
                 assert(vga_colour == UUT.colour_reg)
-                    else $error("PLOT: vga_colour mismatch. expected latched %0d got %0d", UUT.colour_reg, vga_colour);
+                    else $error("plot colour mismatch expected %0d got %0d", UUT.colour_reg, vga_colour);
 
-                // Plot should match bounds check
                 assert(vga_plot == exp_in_bounds)
-                    else $error("PLOT: vga_plot mismatch. exp_in_bounds=%0d got vga_plot=%0d (ex=%0d ey=%0d)",
-                                exp_in_bounds, vga_plot, ex, ey);
+                    else $error("plot enable mismatch expected %0d got %0d exp_x %0d exp_y %0d", exp_in_bounds, vga_plot, exp_x, exp_y);
 
-                // If in bounds, coordinates must match expected octant mapping
-                if (exp_in_bounds) begin
-                    assert(vga_x == ex[7:0])
-                        else $error("PLOT: vga_x mismatch. expected %0d got %0d (oct=%0d ox=%0d oy=%0d)",
-                                    ex, vga_x, UUT.octant_idx, UUT.offset_x, UUT.offset_y);
-                    assert(vga_y == ey[6:0])
-                        else $error("PLOT: vga_y mismatch. expected %0d got %0d (oct=%0d ox=%0d oy=%0d)",
-                                    ey, vga_y, UUT.octant_idx, UUT.offset_x, UUT.offset_y);
+                if(exp_in_bounds) begin
+                    assert(vga_x == exp_x[7:0])
+                        else $error("x mismatch expected %0d got %0d oct %0d ox %0d oy %0d", exp_x, vga_x, UUT.octant_idx, UUT.offset_x, UUT.offset_y);
+                    assert(vga_y == exp_y[6:0])
+                        else $error("y mismatch expected %0d got %0d oct %0d ox %0d oy %0d", exp_y, vga_y, UUT.octant_idx, UUT.offset_x, UUT.offset_y);
                 end
             end
         end
     endtask
 
-    // Run for N cycles and check every cycle (no for-loops; use while)
-    task automatic run_and_check_cycles(input int ncycles);
+    // run for n cycles and check mapping on every cycle
+    // also always enforce safety that we never plot out of bounds
+    task automatic run_cycles_with_checks(input int ncycles);
         int i;
         begin
             i = 0;
-            while (i < ncycles) begin
-                tick();
-                check_plot_cycle();
+            while(i < ncycles) begin
+                step_cycle();
+                check_plot_cycle_mapping();
 
-                // Safety: if vga_plot is high, output coords must be in bounds
-                if (vga_plot) begin
-                    assert(vga_x <= 8'd159) else $error("Out of bounds x plotted: %0d", vga_x);
-                    assert(vga_y <= 7'd119) else $error("Out of bounds y plotted: %0d", vga_y);
+                if(vga_plot) begin
+                    assert(vga_x <= 8'd159) else $error("oob plot x %0d", vga_x);
+                    assert(vga_y <= 7'd119) else $error("oob plot y %0d", vga_y);
                 end
 
-                i++;
+                i = i + 1;
             end
         end
     endtask
 
-    // TESTS
     initial begin
-        // TEST 1: Reset puts module in IDLE and quiet outputs
-        do_reset();
+        // test 1 reset should put us in idle and keep outputs quiet
+        apply_reset();
 
-        assert(UUT.state == IDLE_S) else $error("TEST1: expected IDLE after reset, got state=%0d", UUT.state);
-        assert(done == 1'b0) else $error("TEST1: done should be 0 after reset");
-        assert(vga_plot == 1'b0) else $error("TEST1: vga_plot should be 0 after reset");
+        assert(UUT.state == IDLE_S) else $error("t1 expected idle after reset got %0d", UUT.state);
+        assert(done == 1'b0) else $error("t1 done should be 0 after reset");
+        assert(vga_plot == 1'b0) else $error("t1 vga_plot should be 0 after reset");
 
-        // TEST 2: Small radius (r=0) centered well inside screen
-        // Expect: PLOT cycles output the same centre point (duplicates), then done
+        // test 2 radius 0 case
+        // this is a corner case because all 8 octants map to the same center point
+        // we mainly care that the module runs and reaches done and handshake works
         colour = 3'b101;
         centre_x = 8'd50;
         centre_y = 7'd40;
         radius = 8'd0;
 
         start = 1'b1;
-        tick(); // move into INIT
-        tick(); // enter PLOT
+        step_cycle(); 
+        step_cycle(); 
 
-        // Run enough cycles to get through a few plot cycles + update + done
-        run_and_check_cycles(40);
+        run_cycles_with_checks(40);
+        wait_for_done_or_fail(2000);
 
-        wait_done_with_timeout(2000);
+        step_cycle();
+        assert(done == 1'b1) else $error("t2 done should stay high while start is high");
 
-        // done should stay high while start stays high
-        tick();
-        assert(done == 1'b1) else $error("TEST2: done should remain 1 while start is high");
-
-        // deassert start -> should eventually drop done and return to IDLE
         start = 1'b0;
-        tick();
-        tick();
-        assert(done == 1'b0) else $error("TEST2: done should drop after start deasserted");
-        assert(UUT.state == IDLE_S) else $error("TEST2: expected IDLE after start deasserted");
+        step_cycle();
+        step_cycle();
+        assert(done == 1'b0) else $error("t2 done should drop after start goes low");
+        assert(UUT.state == IDLE_S) else $error("t2 expected idle after start low");
 
-
-        // TEST 3: Normal circle (r=5) in the middle, verify octant mapping + no OOB
+        // test 3 normal circle in the middle
+        // here we check mapping a lot to catch any octant mistakes
         colour = 3'b010;
         centre_x = 8'd80;
         centre_y = 7'd60;
         radius = 8'd5;
 
         start = 1'b1;
-        tick(); // INIT
-        tick(); // PLOT begins
+        step_cycle();
+        step_cycle();
 
-        // Let it run for a while checking mapping each PLOT cycle
-        run_and_check_cycles(400);
+        run_cycles_with_checks(400);
+        wait_for_done_or_fail(20000);
 
-        wait_done_with_timeout(20000);
-
-        // TEST 4: Clipping test (circle partially off-screen)
-        // Centre near top-left with larger radius, expect many octants out-of-bounds, but should never plot out of bounds
+        // test 4 clipping case
+        // center near top left and radius bigger
+        // many candidate pixels are off screen and should not be plotted
         start = 1'b0;
-        tick();
-        tick();
+        step_cycle();
+        step_cycle();
 
         colour = 3'b001;
         centre_x = 8'd1;
@@ -230,42 +231,40 @@ module tb_rtl_circle();
         radius = 8'd20;
 
         start = 1'b1;
-        tick(); // INIT
-        tick(); // PLOT begins
+        step_cycle();
+        step_cycle();
 
-        // Run and continuously ensure no OOB pixels are plotted.
-        run_and_check_cycles(1200);
+        run_cycles_with_checks(1200);
+        wait_for_done_or_fail(200000);
 
-        wait_done_with_timeout(200000);
-
-        // done handshake again
         start = 1'b1;
-        tick();
-        assert(done == 1'b1) else $error("TEST4: done should remain high while start high");
+        step_cycle();
+        assert(done == 1'b1) else $error("t4 done should remain high while start high");
         start = 1'b0;
-        tick();
-        tick();
-        assert(done == 1'b0) else $error("TEST4: done should drop after start low");
+        step_cycle();
+        step_cycle();
+        assert(done == 1'b0) else $error("t4 done should drop after start low");
 
-        // TEST 5: Restart immediately after a completed run
+        // test 5 restart after a completed run
+        // this checks we can go back to idle and start again cleanly
         colour = 3'b110;
         centre_x = 8'd100;
         centre_y = 7'd30;
         radius = 8'd8;
 
         start = 1'b1;
-        tick();
-        tick();
+        step_cycle();
+        step_cycle();
 
-        run_and_check_cycles(800);
-        wait_done_with_timeout(50000);
+        run_cycles_with_checks(800);
+        wait_for_done_or_fail(50000);
 
         start = 1'b0;
-        tick();
-        tick();
-        assert(UUT.state == IDLE_S) else $error("TEST5: expected IDLE after restart sequence");
+        step_cycle();
+        step_cycle();
+        assert(UUT.state == IDLE_S) else $error("t5 expected idle after restart sequence");
 
-        $display("tb_rtl_circle: ALL TESTS PASSED");
+        $display("tb_rtl_circle all tests passed");
         $finish(0);
     end
 
