@@ -14,6 +14,7 @@ module reuleaux(input logic clk,input logic rst_n,input logic [2:0] colour,
     // SQRT3_K is sqrt3 scaled by 2^SQRT3_Q
     // then we do integer division which gives us truncation like the real formula would under sim
     localparam int unsigned SQRT3_Q = 20;
+    // this constant must match the usual Q20 sqrt3 value or the corners shift and clipping gets weird
     localparam int unsigned SQRT3_K = 1811939;
 
     // top level fsm
@@ -36,7 +37,7 @@ module reuleaux(input logic clk,input logic rst_n,input logic [2:0] colour,
 
     state_t state,next_state;
 
-    // latched registers 
+    // latched registers
     logic [2:0] colour_reg;
     logic [7:0] cx_reg;
     logic [6:0] cy_reg;
@@ -45,16 +46,17 @@ module reuleaux(input logic clk,input logic rst_n,input logic [2:0] colour,
     // these are the triangle corner coordinates
     // signed because corners can end up off screen and also because we do subtractions
     logic signed [9:0] c1x,c2x,c3x;
-    logic signed [8:0] c1y,c2y,c3y;
+    // widened y corners from [8:0] to [9:0] to match x width and avoid sign extension mismatches when feeding into distance subtraction later
+    logic signed [9:0] c1y,c2y,c3y;
 
     // we draw 3 circles total
     // circle_idx tells us which corner circle we are currently doing
     logic [1:0] circle_idx;
 
-    // ccx ccy is the current circle center chosen from the three corners
-    // this makes the bresenham logic reusable for all 3 circles
+    // ccx ccy is the current circle center chosen from the three corners this makes the bresenham logic reusable for all 3 circles
     logic signed [9:0] ccx;
-    logic signed [8:0] ccy;
+    // widened ccy to [9:0] to stay consistent with the wider corner y registers
+    logic signed [9:0] ccy;
 
     // comb logic to select current circle center based on circle_idx
     always_comb begin
@@ -68,11 +70,42 @@ module reuleaux(input logic clk,input logic rst_n,input logic [2:0] colour,
         endcase
     end
 
+    // we also pick the other two circle centers once this makes clipping simpler and avoids mixing up which circles we are checking
+    logic signed [9:0] o1x,o2x;
+    logic signed [9:0] o1y,o2y;
+
+    // combination logic that assignes the other circles centers based on the current circle index so for example
+    // if curr circle is 0 then the other centers would be centers of circle 1 and 2 center coords
+    always_comb begin
+        o1x = c2x;
+        o1y = c2y;
+        o2x = c3x;
+        o2y = c3y;
+
+        if(circle_idx == 2'd0) begin
+            o1x = c2x; 
+            o1y = c2y;
+            o2x = c3x; 
+            o2y = c3y;
+        end else if(circle_idx == 2'd1) begin
+            o1x = c1x; 
+            o1y = c1y;
+            o2x = c3x; 
+            o2y = c3y;
+        end else begin
+            o1x = c1x; 
+            o1y = c1y;
+            o2x = c2x; 
+            o2y = c2y;
+        end
+    end
+
     // bresenham registers for drawing one circle boundary
     // we reuse the exact same idea as task3 circle
     logic signed [8:0] offset_x;
     logic signed [8:0] offset_y;
-    logic signed [11:0] crit;
+    // note that we have widened crit from [11:0] to [15:0] at radius 80 the accumulator can exceed 2047 which is the signed 12-bit ceiling overflow flips the sign and corrupts which bresenham branch we take which distorts the circle
+    logic signed [15:0] crit;
 
     // octant_idx selects which of the 8 symmetric points we output this cycle
     // 8 cycles of plot then 1 cycle of update then repeat
@@ -82,20 +115,20 @@ module reuleaux(input logic clk,input logic rst_n,input logic [2:0] colour,
     // this keeps the update state clean and also makes the loop decision consistent
     logic signed [8:0] offset_x_new;
     logic signed [8:0] offset_y_new;
-    logic signed [11:0] crit_new;
+    logic signed [15:0] crit_new;
     logic loop_continue_new;
 
-    // same idea as task 3 code we compue the offsets and crit value based on the new computed values
+    // same idea as task 3 code we compute the offsets and crit value based on the new computed values
     always_comb begin
         offset_y_new = offset_y + 9'sd1;
         offset_x_new = offset_x;
         crit_new = crit;
 
-        if(crit <= 12'sd0) begin
-            crit_new = crit + (12'sd2 * $signed(offset_y_new)) + 12'sd1;
+        if(crit <= 16'sd0) begin
+            crit_new = crit + (16'sd2 * $signed(offset_y_new)) + 16'sd1;
         end else begin
             offset_x_new = offset_x - 9'sd1;
-            crit_new = crit + (12'sd2 * $signed(offset_y_new - offset_x_new)) + 12'sd1;
+            crit_new = crit + (16'sd2 * $signed(offset_y_new - offset_x_new)) + 16'sd1;
         end
 
         loop_continue_new = (offset_y_new <= offset_x_new);
@@ -104,11 +137,12 @@ module reuleaux(input logic clk,input logic rst_n,input logic [2:0] colour,
     // tmp_x tmp_y is the candidate boundary pixel for this cycle
     // this is just the octant mapping around the current center ccx ccy
     logic signed [9:0] tmp_x;
-    logic signed [8:0] tmp_y;
+    logic signed [9:0] tmp_y;
 
+    // combination logic that computes the candidate boundry pixel based on the octant index
     always_comb begin
         tmp_x = 10'sd0;
-        tmp_y = 9'sd0;
+        tmp_y = 10'sd0;
         case(octant_idx)
             3'd0: begin tmp_x = ccx + offset_x; tmp_y = ccy + offset_y; end
             3'd1: begin tmp_x = ccx + offset_y; tmp_y = ccy + offset_x; end
@@ -118,7 +152,7 @@ module reuleaux(input logic clk,input logic rst_n,input logic [2:0] colour,
             3'd5: begin tmp_x = ccx - offset_y; tmp_y = ccy - offset_x; end
             3'd6: begin tmp_x = ccx + offset_x; tmp_y = ccy - offset_y; end
             3'd7: begin tmp_x = ccx + offset_y; tmp_y = ccy - offset_x; end
-            default: begin tmp_x = 10'sd0; tmp_y = 9'sd0; end
+            default: begin tmp_x = 10'sd0; tmp_y = 10'sd0; end
         endcase
     end
 
@@ -127,68 +161,76 @@ module reuleaux(input logic clk,input logic rst_n,input logic [2:0] colour,
     logic in_bounds;
     always_comb begin
         in_bounds = 1'b0;
-        if((tmp_x >= 0) && (tmp_x <= 10'sd159) && (tmp_y >= 0) && (tmp_y <= 9'sd119)) in_bounds = 1'b1;
+        if((tmp_x >= 0) && (tmp_x <= 10'sd159) && (tmp_y >= 0) && (tmp_y <= 10'sd119)) in_bounds = 1'b1;
     end
 
     // second level clipping is the reuleaux rule
     // the pixel must be inside the other two circles
     // we do distance squared compare so we do not need sqrt in hardware
-    // d2 is diameter squared because radius for these circles is diameter
-    logic [21:0] d2;
-    assign d2 = $unsigned(d_reg) * $unsigned(d_reg);
+    // IMPORTANT this math must be done in wide enough types or it will overflow and nothing clips
+    // this block is basically the same sizing idea as your friends working code
 
-    // Helper task to compute distance squared
-    // dx and dy are signed
-    // we cast to unsigned for the squared sum because result is non negative
-    task automatic dist2_to_task(input logic signed [9:0] px,input logic signed [8:0] py,input logic signed [9:0] cx,input logic signed [8:0] cy,output logic [21:0] d2_out);
-        logic signed [10:0] dx;
-        logic signed [9:0] dy;
-        begin
-            dx = px - cx;
-            dy = py - cy;
-            d2_out = $unsigned(dx * dx) + $unsigned(dy * dy);
-        end
-    endtask
+    // turn tmp into slightly wider pixels so subtractions and squares behave
+    logic signed [10:0] px;
+    logic signed [10:0] py;
 
-    // for the reuleaux triangle we only want the arc that is inside the other two circles
-    // so for each candidate boundary pixel we check it against the other two circle centers
-    // inside_other1 means the pixel is inside the first other circle
-    // inside_other2 means the pixel is inside the second other circle
-    logic inside_other1;
-    logic inside_other2;
-    logic [21:0] d2_other1;
-    logic [21:0] d2_other2;
-
-    // combinational logic that decides which two circles are the other circles
-    // circle_idx tells us which circle we are currently generating boundary points for
-    // if we are drawing circle 0 we must check inside circle 1 and circle 2 and same logic for others
-    // then we compare the computed distance squared to d2 which is diameter squared
-    // if d2_other <= d2 then the pixel is inside or on that circle
     always_comb begin
-        inside_other1 = 1'b0;
-        inside_other2 = 1'b0;
-        d2_other1 = 22'd0;
-        d2_other2 = 22'd0;
+        px = $signed(tmp_x);
+        py = $signed(tmp_y);
+    end
 
-        if(circle_idx == 2'd0) begin
-            dist2_to_task(tmp_x,tmp_y,c2x,c2y,d2_other1);
-            dist2_to_task(tmp_x,tmp_y,c3x,c3y,d2_other2);
-        end else if(circle_idx == 2'd1) begin
-            dist2_to_task(tmp_x,tmp_y,c1x,c1y,d2_other1);
-            dist2_to_task(tmp_x,tmp_y,c3x,c3y,d2_other2);
-        end else begin
-            dist2_to_task(tmp_x,tmp_y,c1x,c1y,d2_other1);
-            dist2_to_task(tmp_x,tmp_y,c2x,c2y,d2_other2);
-        end
+    // dx and dy to each other circle center
+    logic signed [11:0] dx1;
+    logic signed [11:0] dy1s;
+    logic signed [11:0] dx2;
+    logic signed [11:0] dy2s;
 
-        inside_other1 = (d2_other1 <= d2);
-        inside_other2 = (d2_other2 <= d2);
+    // squared distances and radius squared
+    logic [23:0] dist1;
+    logic [23:0] dist2;
+    logic [23:0] d2_clip;
+
+    // keep_pixel is the final inside check result
+    logic keep_pixel;
+
+    // compute distance math inside comb always block 
+    always_comb begin
+        // signed deltas from pixel to each other center always computed no gating
+        dx1 = px - $signed(o1x);
+        dy1s = py - $signed(o1y);
+
+        dx2 = px - $signed(o2x);
+        dy2s = py - $signed(o2y);
+
+        // square and add in a width that cannot wrap for our screen sizes
+        dist1 = dx1 * dx1 + dy1s * dy1s;
+        dist2 = dx2 * dx2 + dy2s * dy2s;
+
+        // radius for each construction circle is diameter
+        d2_clip = d_reg * d_reg;
+
+        // inside both other circles AND on screen means we keep this boundary pixel
+        // in_bounds is folded in here instead of gating the whole block above
+        keep_pixel = in_bounds && (dist1 <= d2_clip) && (dist2 <= d2_clip);
     end
 
     // plot_ok is the final permission for writing a pixel
     // it must be on screen and inside both other circles
     logic plot_ok;
-    assign plot_ok = in_bounds && inside_other1 && inside_other2;
+    assign plot_ok = keep_pixel;
+
+    // drive vga outputs combinationally instead of registering them
+    // Note that registering vga_plot and vga_x/y in the same always_ff block creates a one cycle misalignment
+    // vga_x/y would hold the previous octant coords while vga_plot reflects the current decision
+    // combinational drive means the vga core always sees x y and plot that correspond to the same cycle
+    always_comb begin
+        vga_colour = colour_reg;
+        vga_plot = (state == PLOT) && plot_ok;
+        vga_x = plot_ok ? tmp_x[7:0] : 8'd0;
+        vga_y = plot_ok ? tmp_y[6:0] : 7'd0;
+        // done is set if we're in the DONE state and note that we transition to idle when ever start gets deasserted so this logic checks out 
+        done = (state == DONE);
+    end
 
     // corner math
     // corners are based on the handout formulas
@@ -248,38 +290,26 @@ module reuleaux(input logic clk,input logic rst_n,input logic [2:0] colour,
             // Reset all variables to default values
             state <= IDLE;
 
-            done <= 1'b0;
-            vga_x <= 8'd0;
-            vga_y <= 7'd0;
-            vga_colour <= 3'd0;
-            vga_plot <= 1'b0;
-
             colour_reg <= 3'd0;
             cx_reg <= 8'd0;
             cy_reg <= 7'd0;
             d_reg <= 8'd0;
 
             c1x <= 10'sd0;
-            c1y <= 9'sd0;
+            c1y <= 10'sd0;
             c2x <= 10'sd0;
-            c2y <= 9'sd0;
+            c2y <= 10'sd0;
             c3x <= 10'sd0;
-            c3y <= 9'sd0;
+            c3y <= 10'sd0;
             circle_idx <= 2'd0;
 
             offset_x <= 9'sd0;
             offset_y <= 9'sd0;
-            crit <= 12'sd0;
+            crit <= 16'sd0;
             octant_idx <= 3'd0;
 
         end else begin
             state <= next_state;
-
-            // defaults each cycle
-            // vga_plot is only high when we truly want to write a pixel
-            // done is only high in the done state
-            done <= 1'b0;
-            vga_plot <= 1'b0;
 
             case(state)
                 IDLE: begin
@@ -296,15 +326,16 @@ module reuleaux(input logic clk,input logic rst_n,input logic [2:0] colour,
                     d_reg <= diameter;
 
                     // compute corners based on centre and diameter
-                    // c1 and c2 are down left and down right
+                    // c1 is the bottom right corner
+                    // c2 is the bottom left corner
                     // c3 is the top point
                     c1x <= $signed({1'b0,centre_x}) + $signed({1'b0,(diameter / 2)});
                     c2x <= $signed({1'b0,centre_x}) - $signed({1'b0,(diameter / 2)});
                     c3x <= $signed({1'b0,centre_x});
 
-                    c1y <= $signed({1'b0,centre_y}) + $signed(yoff1_q[8:0]);
-                    c2y <= $signed({1'b0,centre_y}) + $signed(yoff1_q[8:0]);
-                    c3y <= $signed({1'b0,centre_y}) - $signed(yoff3_q[8:0]);
+                    c1y <= $signed({1'b0,centre_y}) + $signed({1'b0,yoff1_q[7:0]});
+                    c2y <= $signed({1'b0,centre_y}) + $signed({1'b0,yoff1_q[7:0]});
+                    c3y <= $signed({1'b0,centre_y}) - $signed({1'b0,yoff3_q[7:0]});
 
                     circle_idx <= 2'd0;
                 end
@@ -314,24 +345,14 @@ module reuleaux(input logic clk,input logic rst_n,input logic [2:0] colour,
                     // radius equals diameter for the reuleaux construction
                     offset_y <= 9'sd0;
                     offset_x <= $signed({1'b0,d_reg});
-                    crit <= 12'sd1 - $signed({1'b0,d_reg});
+                    // FIX init crit at 16-bit width to match the wider register
+                    crit <= 16'sd1 - $signed({1'b0,d_reg});
                     octant_idx <= 3'd0;
                 end
 
                 PLOT: begin
                     // one pixel per cycle
-                    // plot_ok already includes screen bounds and the inside other circles checks
-                    vga_colour <= colour_reg;
-                   
-                    // pixel is only written when plot_ok is true
-                    if(plot_ok) begin
-                        vga_x <= tmp_x[7:0];
-                        vga_y <= tmp_y[6:0];
-                        vga_plot <= 1'b1;
-                    end else begin
-                        vga_plot <= 1'b0;
-                    end
-
+                    // vga outputs are now driven combinationally so we only advance octant here
                     // advance octant
                     if(octant_idx == 3'd7) octant_idx <= 3'd0;
                     else octant_idx <= octant_idx + 3'd1;
@@ -351,9 +372,7 @@ module reuleaux(input logic clk,input logic rst_n,input logic [2:0] colour,
                 end
 
                 DONE: begin
-                    // handshake behavior
-                    // done stays high until start goes low
-                    done <= 1'b1;
+                    // done stays high until start goes low done is driven combinationally above so nothing to do here
                 end
 
                 default: begin end

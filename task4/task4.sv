@@ -22,24 +22,41 @@ module task4(input logic CLOCK_50,input logic [3:0] KEY,
     assign start_btn = ~KEY[0];
 
     // VGA adapter core
-    // This core owns the framebuffer. We only feed it x,y,colour,plot.
-    // When plot=1, it writes (x,y) with colour on the next rising edge of CLOCK_50.
-    vga_adapter VGA(
+    // Note we set res to 160x120 because our design outputs 0..159 and 0..119
+    // also note that the adapter outputs 10 bit rgb but the board uses 8 bit so we slice [9:2] after instantiation 
+    logic [9:0] vga_r10;
+    logic [9:0] vga_g10;
+    logic [9:0] vga_b10;
+    logic vga_blank;
+    logic vga_sync;
+
+    // Instantiate w correct parameters 
+    vga_adapter #(
+        .RESOLUTION("160x120"),
+        .MONOCHROME("FALSE"),
+        .BITS_PER_COLOUR_CHANNEL(1),
+        .BACKGROUND_IMAGE("background.mif"),
+        .USING_DE1("FALSE")
+    ) VGA (
         .resetn(rst_n),
         .clock(CLOCK_50),
         .colour(VGA_COLOUR),
         .x(VGA_X),
         .y(VGA_Y),
         .plot(VGA_PLOT),
-        .VGA_R(VGA_R),
-        .VGA_G(VGA_G),
-        .VGA_B(VGA_B),
+        .VGA_R(vga_r10),
+        .VGA_G(vga_g10),
+        .VGA_B(vga_b10),
         .VGA_HS(VGA_HS),
         .VGA_VS(VGA_VS),
-        .VGA_BLANK(),
-        .VGA_SYNC(),
+        .VGA_BLANK(vga_blank),
+        .VGA_SYNC(vga_sync),
         .VGA_CLK(VGA_CLK)
     );
+
+    assign VGA_R = vga_r10[9:2];
+    assign VGA_G = vga_g10[9:2];
+    assign VGA_B = vga_b10[9:2];
 
     // Top-level states
     // - BOOT_CLEAR: happens right after reset, we clear the whole framebuffer to black
