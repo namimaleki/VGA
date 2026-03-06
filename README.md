@@ -1,4 +1,4 @@
-# VGA Shape Drawer on FPGA (SystemVerilog)
+# VGA Shape Drawer on FPGA 
 
 This is a small **hardware graphics engine** written in **SystemVerilog** that drives a **VGA framebuffer core** to draw shapes on a **160×120** pixel grid. The whole point of the project is building **datapaths + FSMs** that generate `(x, y, colour, plot)` signals correctly, one pixel per clock.
 
